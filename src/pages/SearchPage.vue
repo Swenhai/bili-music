@@ -76,6 +76,14 @@
 
             <div class="result-actions" @click.stop>
               <q-btn
+                flat round dense size="sm" icon="mdi-call-split" color="grey-6"
+                :disable="loadingSplitBvid === item.bvid"
+                @click="openSplit(item)"
+              >
+                <q-spinner v-if="loadingSplitBvid === item.bvid" />
+                <q-tooltip v-else>拆分合集为单曲</q-tooltip>
+              </q-btn>
+              <q-btn
                 flat round dense size="sm"
                 :icon="favStore.isFavorited(item.bvid) ? 'mdi-heart' : 'mdi-heart-outline'"
                 :color="favStore.isFavorited(item.bvid) ? 'primary' : 'grey-6'"
@@ -111,6 +119,48 @@
         </div>
       </template>
     </div>
+
+    <!-- 合集拆分对话框 -->
+    <q-dialog v-model="splitOpen">
+      <q-card dark class="split-card">
+        <q-card-section class="split-header">
+          <div class="split-head-info">
+            <div class="split-title">{{ splitTitle }}</div>
+            <div class="split-sub">共 {{ splitSongs.length }} 首 · 点击任意一首播放</div>
+          </div>
+          <q-space />
+          <q-btn flat dense icon="mdi-playlist-plus" label="全部加入队列" color="primary" no-caps @click="addAllSplitToQueue" />
+          <q-btn flat round dense icon="mdi-close" color="grey-6" v-close-popup />
+        </q-card-section>
+        <q-separator dark />
+        <q-card-section class="split-list">
+          <div v-if="splitPlaying" class="split-loading">
+            <q-spinner-dots color="primary" size="32px" />
+            <span>正在获取音频...</span>
+          </div>
+          <div
+            v-else
+            v-for="(song, i) in splitSongs" :key="song.bvid + '-' + song.cid"
+            class="split-item"
+            :class="{ active: playerStore.currentTrack?.id === splitSongId(song) }"
+            @click="playSplitSong(i)"
+          >
+            <span class="split-idx">
+              <q-icon v-if="playerStore.currentTrack?.id === splitSongId(song)" name="mdi-volume-high" color="primary" />
+              <template v-else>{{ i + 1 }}</template>
+            </span>
+            <span class="split-song-title">{{ song.title }}</span>
+            <span class="split-dur">{{ fmtSec(song.duration) }}</span>
+            <q-btn flat round dense size="sm" icon="mdi-play" color="primary" @click.stop="playSplitSong(i)">
+              <q-tooltip>播放</q-tooltip>
+            </q-btn>
+            <q-btn flat round dense size="sm" icon="mdi-playlist-plus" color="grey-6" @click.stop="addSplitToQueue(i)">
+              <q-tooltip>加入队列</q-tooltip>
+            </q-btn>
+          </div>
+        </q-card-section>
+      </q-card>
+    </q-dialog>
   </q-page>
 </template>
 
@@ -118,7 +168,7 @@
 import { ref, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Notify } from 'quasar'
-import { searchVideos, getVideoCid, getAudioUrl, type SearchResult } from '../api/bilibili'
+import { searchVideos, getVideoCid, getVideoDetail, getAudioUrl, type SearchResult, type SplitSong } from '../api/bilibili'
 import { usePlayerStore } from '../stores/player'
 import { useFavoritesStore } from '../stores/favorites'
 import { useLibraryStore } from '../stores/library'
@@ -135,6 +185,15 @@ const hasSearched = ref(false)
 const error = ref('')
 const results = ref<SearchResult[]>([])
 const loadingBvid = ref('')
+const loadingSplitBvid = ref('')
+
+// 拆分对话框状态
+const splitOpen = ref(false)
+const splitTitle = ref('')
+const splitSongs = ref<SplitSong[]>([])
+const splitAuthor = ref('')
+const splitCover = ref('')
+const splitPlaying = ref(false)
 
 const hotTags = ['周杰伦', '陈奕迅', '邓紫棋', '翻唱', '钢琴', 'OST', '国风', '说唱', 'Vocaloid', '纯音乐']
 
@@ -161,15 +220,109 @@ async function doSearch() {
   }
 }
 
+function splitSongId(song: SplitSong): string {
+  return `${song.bvid}::${song.cid}`
+}
+
+function fmtSec(sec: number): string {
+  if (!sec) return '--:--'
+  return `${Math.floor(sec / 60)}:${Math.floor(sec % 60).toString().padStart(2, '0')}`
+}
+
+// ─── 合集拆分 ────────────────────────────────────────────────────────────────
+
+interface SplitPick { songs: SplitSong[]; title: string }
+
+async function pickSplitSongs(bvid: string): Promise<SplitPick | null> {
+  const detail = await getVideoDetail(bvid)
+  // 优先分 P，其次合集
+  if (detail.pages.length > 1) return { songs: detail.pages, title: detail.title }
+  if (detail.seasonEpisodes.length > 1) return { songs: detail.seasonEpisodes, title: detail.seasonTitle || detail.title }
+  return null
+}
+
+async function openSplit(item: SearchResult) {
+  if (loadingSplitBvid.value) return
+  loadingSplitBvid.value = item.bvid
+  try {
+    const pick = await pickSplitSongs(item.bvid)
+    if (!pick) {
+      Notify.create({ message: '这个视频没有分 P，也不属于合集', icon: 'mdi-information-outline', color: 'dark', timeout: 2000 })
+      return
+    }
+    splitTitle.value = pick.title
+    splitSongs.value = pick.songs
+    splitAuthor.value = item.author
+    splitCover.value = item.cover
+    splitOpen.value = true
+  } catch (e: unknown) {
+    Notify.create({ type: 'negative', message: '获取合集信息失败', caption: e instanceof Error ? e.message : '', timeout: 3000 })
+  } finally {
+    loadingSplitBvid.value = ''
+  }
+}
+
+function splitTrack(i: number) {
+  const song = splitSongs.value[i]!
+  return {
+    id: splitSongId(song),
+    bvid: song.bvid,
+    cid: song.cid,
+    title: song.title,
+    author: splitAuthor.value,
+    cover: splitCover.value,
+    duration: song.duration,
+  }
+}
+
+async function playSplitSong(i: number) {
+  const song = splitSongs.value[i]!
+  splitPlaying.value = true
+  try {
+    const url = await getAudioUrl(song.bvid, song.cid)
+    const track = splitTrack(i)
+    playerStore.addToPlaylist(track)
+    await playerStore.playTrack(track, url)
+    splitOpen.value = false
+  } catch (e: unknown) {
+    Notify.create({ type: 'negative', message: '播放失败', caption: e instanceof Error ? e.message : '', timeout: 3000 })
+  } finally {
+    splitPlaying.value = false
+  }
+}
+
+function addSplitToQueue(i: number) {
+  playerStore.addToPlaylist(splitTrack(i))
+  Notify.create({ message: '已加入播放队列', icon: 'mdi-playlist-plus', color: 'dark', timeout: 1200 })
+}
+
+function addAllSplitToQueue() {
+  for (let i = 0; i < splitSongs.value.length; i++) {
+    playerStore.addToPlaylist(splitTrack(i))
+  }
+  Notify.create({ message: `已加入 ${splitSongs.value.length} 首到播放队列`, icon: 'mdi-playlist-plus', color: 'dark', timeout: 1500 })
+}
+
 async function handlePlay(item: SearchResult) {
   if (loadingBvid.value) return
   loadingBvid.value = item.bvid
   try {
+    // 先看是否是多 P / 合集，是则弹出拆分列表
+    const pick = await pickSplitSongs(item.bvid)
+    if (pick) {
+      splitTitle.value = pick.title
+      splitSongs.value = pick.songs
+      splitAuthor.value = item.author
+      splitCover.value = item.cover
+      splitOpen.value = true
+      return
+    }
     const cid = await getVideoCid(item.bvid)
     const url = await getAudioUrl(item.bvid, cid)
     const track = {
       id: item.bvid,
       bvid: item.bvid,
+      cid,
       title: item.title,
       author: item.author,
       cover: item.cover,
@@ -357,5 +510,77 @@ watch(() => route.query.q, (q) => {
   gap: 4px;
   opacity: 0;
   transition: opacity 0.2s;
+}
+
+// ─── 拆分对话框 ──────────────────────────────────────────────────────────────
+.split-card {
+  width: 560px;
+  max-width: 90vw;
+  background: var(--color-bg-card, #1e1e24);
+  border-radius: 12px;
+  .split-header {
+    display: flex;
+    align-items: center;
+    padding-bottom: 8px;
+    .split-head-info { min-width: 0; margin-right: 12px; }
+    .split-title {
+      font-size: 15px;
+      font-weight: 500;
+      color: var(--color-text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .split-sub { font-size: 12px; color: var(--color-text-muted); margin-top: 2px; }
+  }
+  .split-list {
+    padding-top: 4px;
+    max-height: 55vh;
+    overflow-y: auto;
+  }
+  .split-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 32px 0;
+    color: var(--color-text-muted);
+    font-size: 13px;
+  }
+  .split-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 8px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.15s;
+    &:hover { background: rgba(255, 255, 255, 0.06); }
+    &.active .split-song-title { color: var(--color-primary); }
+    .split-idx {
+      width: 26px;
+      flex-shrink: 0;
+      text-align: center;
+      font-size: 12px;
+      color: var(--color-text-muted);
+      display: flex;
+      justify-content: center;
+    }
+    .split-song-title {
+      flex: 1;
+      font-size: 13px;
+      color: var(--color-text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      transition: color 0.15s;
+    }
+    .split-dur {
+      flex-shrink: 0;
+      font-size: 11px;
+      color: var(--color-text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+  }
 }
 </style>

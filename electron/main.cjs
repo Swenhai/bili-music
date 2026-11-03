@@ -302,6 +302,10 @@ if (process.platform === 'win32') app.setAppUserModelId('com.bilimusic.app')
 
 app.whenReady().then(async () => {
   nativeTheme.themeSource = 'dark'
+  // 关键修复：系统代理（如 127.0.0.1:7821）会劫持渲染进程对 127.0.0.1:25588
+  // 本地代理的请求，导致"没法联网"。强制 Chromium 会话直连，本地代理自己
+  // 用 Node https.request 出站，不受影响。
+  await session.defaultSession.setProxy({ mode: 'direct' })
   await startProxy()
   const win = createWindow()
   createTray(win)

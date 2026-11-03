@@ -104,7 +104,8 @@ export const usePlayerStore = defineStore('player', () => {
     if (progressTimer) clearInterval(progressTimer)
 
     currentTrack.value = track
-    const idx = playlist.value.findIndex((t) => t.bvid === track.bvid)
+    // 拆分单曲共享同一 bvid，必须按 id 定位（id 含 P 号/cid）
+    const idx = playlist.value.findIndex((t) => t.id === track.id)
     if (idx >= 0) currentIndex.value = idx
     isLoading.value = true
     isPlaying.value = false
@@ -217,7 +218,7 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   function addToPlaylist(track: Track) {
-    const exists = playlist.value.findIndex((t) => t.bvid === track.bvid)
+    const exists = playlist.value.findIndex((t) => t.id === track.id)
     if (exists === -1) {
       playlist.value.push(track)
     }

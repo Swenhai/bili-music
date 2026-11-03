@@ -211,7 +211,8 @@ const MAX_SKIP_RETRY = 3
 
 async function playFromQueue(track: Track) {
   try {
-    const cid = await getVideoCid(track.bvid)
+    // 拆分单曲已带各自 cid，直接用；普通曲目才重新取
+    const cid = track.cid ?? await getVideoCid(track.bvid)
     const url = await getAudioUrl(track.bvid, cid)
     await playerStore.playTrack(track, url)
     _skipRetryCount = 0

@@ -75,7 +75,8 @@ async function _doSearch(keyword: string, page: number): Promise<SearchResult[]>
     page_size: 20,
     order: 'default',
   })
-  const res = await http.get(`${BASE}/x/web-interface/search/type?${qs}`)
+  // 2026-11 起 B 站风控强制搜索走 wbi 路径，旧 /search/type 返回 HTML 拦截页
+  const res = await http.get(`${BASE}/x/web-interface/wbi/search/type?${qs}`)
   const list = res.data?.data?.result ?? []
   return list.map((item: Record<string, unknown>) => ({
     bvid: item.bvid as string,
@@ -122,6 +123,56 @@ function formatDate(ts: number): string {
 export async function getVideoCid(bvid: string): Promise<number> {
   const res = await http.get(`${BASE}/x/web-interface/view?bvid=${bvid}`)
   return res.data?.data?.cid as number
+}
+
+// ─── 合集拆分：多 P 视频与 UGC 合集 ─────────────────────────────────────────
+
+export interface SplitSong {
+  bvid: string
+  cid: number
+  title: string
+  duration: number   // 秒
+}
+
+export interface VideoDetail {
+  title: string
+  pages: SplitSong[]            // 视频 分P 列表
+  seasonTitle: string
+  seasonEpisodes: SplitSong[]   // 所属 UGC 合集的全部视频
+}
+
+export async function getVideoDetail(bvid: string): Promise<VideoDetail> {
+  const res = await http.get(`${BASE}/x/web-interface/view?bvid=${bvid}`)
+  const d = res.data?.data ?? {}
+
+  // 分 P：每个 P 有独立 cid，可单独取流
+  const pages: SplitSong[] = ((d.pages ?? []) as Record<string, unknown>[]).map((p) => ({
+    bvid,
+    cid: p.cid as number,
+    title: String(p.part ?? ''),
+    duration: Number(p.duration ?? 0),
+  }))
+
+  // UGC 合集：episodes 里每集是独立 bvid（arc.cid 取该集流）
+  let seasonTitle = ''
+  let seasonEpisodes: SplitSong[] = []
+  const s = d.ugc_season as Record<string, unknown> | undefined
+  if (s) {
+    seasonTitle = String(s.title ?? '')
+    for (const sec of (s.sections ?? []) as Record<string, unknown>[]) {
+      for (const ep of (sec.episodes ?? []) as Record<string, unknown>[]) {
+        const arc = (ep.arc ?? ep) as Record<string, unknown>
+        if (!ep.bvid) continue
+        seasonEpisodes.push({
+          bvid: String(ep.bvid),
+          cid: (arc.cid ?? ep.cid ?? 0) as number,
+          title: String(arc.title ?? ep.title ?? ''),
+          duration: Number(arc.duration ?? 0),
+        })
+      }
+    }
+  }
+  return { title: String(d.title ?? ''), pages, seasonTitle, seasonEpisodes }
 }
 
 // ─── 音乐分区排行榜（无需 WBI 签名，比 search 快很多）────────────────────────
